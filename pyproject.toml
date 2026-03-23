@@ -1,0 +1,12 @@
+[project]
+name = "ollarena"
+version = "0.1.0"
+description = "Terminal-based model comparison arena for Ollama — compare output quality across local models"
+requires-python = ">=3.11"
+dependencies = [
+    "requests",
+    "rich",
+]
+
+[project.scripts]
+ollarena = "ollarena:main"
