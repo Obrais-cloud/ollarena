@@ -30,6 +30,16 @@ HISTORY_FILE = DATA_DIR / "history.json"
 
 console = Console()
 
+
+def _jevkit():
+    try:
+        import jevkit; return jevkit
+    except ImportError:
+        import os, sys
+        p = os.path.expanduser('~/typesafe-mcp')
+        if p not in sys.path: sys.path.insert(0, p)
+        import jevkit; return jevkit
+
 # ── ELO ─────────────────────────────────────────────────────────────
 
 DEFAULT_ELO = 1500
@@ -325,6 +335,44 @@ def prompt_vote(results: list[GenerationResult], blind: bool = False) -> tuple[s
             return model, False
 
 
+def jev_vote(prompt: str, results: list[GenerationResult]) -> tuple[str | None, bool]:
+    """Automatic winner via the Jev judge. Returns (winner_model|None, tie),
+    the same tuple shape as prompt_vote(). Ignores results with .error."""
+    valid = [r for r in results if not r.error]
+    if len(valid) < 2:
+        console.print("[yellow]Not enough successful responses to judge.[/yellow]")
+        return None, False
+
+    jevkit = _jevkit()
+
+    if len(valid) == 2:
+        r0, r1 = valid[0], valid[1]
+        res = jevkit.compare_pair(prompt, r0.output, r1.output)
+        w = res.get("winner")
+        conf = res.get("confidence", 0.0)
+        if w == "a":
+            console.print(f"  [green]Jev picked: {r0.model}[/green] [dim](confidence {conf:.2f})[/dim]")
+            return r0.model, False
+        if w == "b":
+            console.print(f"  [green]Jev picked: {r1.model}[/green] [dim](confidence {conf:.2f})[/dim]")
+            return r1.model, False
+        console.print(f"  [yellow]Jev called it a tie[/yellow] [dim](confidence {conf:.2f})[/dim]")
+        return None, True
+
+    # >2 valid results
+    res = jevkit.best_of(prompt, {r.model: r.output for r in valid})
+    winner = res.get("winner")
+    tie = res.get("tie", False)
+    if tie or not winner:
+        console.print("  [yellow]Jev called it a tie[/yellow]")
+        return winner, tie
+    scores = res.get("scores", {})
+    conf = scores.get(winner)
+    conf_str = f" [dim](score {conf:.2f})[/dim]" if isinstance(conf, (int, float)) else ""
+    console.print(f"  [green]Jev picked: {winner}[/green]{conf_str}")
+    return winner, tie
+
+
 # ── Commands ────────────────────────────────────────────────────────
 
 
@@ -420,7 +468,14 @@ def cmd_battle(args):
     display_results(results, blind=blind)
 
     # Vote
-    winner, tie = prompt_vote(results, blind=blind)
+    if getattr(args, "judge", False):
+        try:
+            winner, tie = jev_vote(prompt, results)
+        except Exception as e:
+            console.print(f"[yellow]Jev judge failed ({e}); falling back to human vote.[/yellow]")
+            winner, tie = prompt_vote(results, blind=blind)
+    else:
+        winner, tie = prompt_vote(results, blind=blind)
     result_dicts = [
         {
             "model": r.model,
@@ -576,6 +631,13 @@ def main():
     p_battle.add_argument("-s", "--system", help="System prompt")
     p_battle.add_argument("-t", "--max-tokens", type=int, default=1024, help="Max tokens (default: 1024)")
     p_battle.add_argument("--blind", action="store_true", help="Hide model names until after voting")
+    p_battle.add_argument(
+        "--judge",
+        "--auto",
+        dest="judge",
+        action="store_true",
+        help="Auto-pick the winner with the Jev judge instead of a human vote",
+    )
 
     # leaderboard
     sub.add_parser("leaderboard", aliases=["lb"], help="Show ELO leaderboard")
